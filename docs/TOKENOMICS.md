@@ -2,21 +2,44 @@
 
 ## Supply
 
-- Total supply and vesting constants are defined on-chain in contract source.
+- Total supply: `100,000,000,000` tokens (18 decimals).
+- Fixed split at deployment:
+- Market allocation: `50,000,000,000`.
+- Vesting allocation: `50,000,000,000`.
+- No post-deployment mint function exists.
 
 ## Distribution
 
-- Market allocation is sent to market recipient at deployment.
-- Vesting allocation is minted to `TokenSample` and transferred once via `initializeVesting`.
-- Vesting unlocks linearly over configured duration.
+- At `TokenSample` deploy:
+- `50B` minted to `marketRecipient`.
+- `50B` minted to `TokenSample` itself as pending vesting allocation.
+
+- One-time initialization:
+- Owner calls `initializeVesting(linearVesting)` to transfer the full `50B` vesting allocation.
+- Function is single-use and cannot be called twice.
+
+- Linear vesting stream:
+- `LinearVesting` emits `50B` over `5 * 365 days` (1825 days).
+- Claims are permissionless and always transfer to current `vestingRecipient`.
 
 ## Emissions
 
-- Supporter rewards are emitted over fixed duration.
-- Burn penalty and compounding behavior are encoded in pool logic.
-- Supporter emission budget is sourced from upstream `LinearVesting`.
+- `ZarosabeSupporter` target reward budget: `50B` over `5 * 365 days`.
+- Emission clock is local to supporter contract and starts on `startEmission()`.
+- Reward liquidity source is upstream `LinearVesting` claims.
 
-## To Complete
+- Claim burn schedule (by elapsed time since supporter emission start):
+- Year 1: `40%`
+- Year 2: `30%`
+- Year 3: `20%`
+- Year 4: `10%`
+- Year 5: `5%`
+- After year 5: `0%`
 
-- Fill exact percentages and recipient addresses.
-- Add treasury, liquidity, and vesting policy rationale.
+- `compound()` path:
+- No burn applied.
+- Claimed reward is re-locked as principal.
+
+- Lock semantics:
+- Users may lock before supporter emission starts (fair-launch window).
+- Principal unlock is globally allowed only after supporter emission end.

@@ -41,7 +41,7 @@ contract ZarosabeSupporterTest is Test {
         vesting.startEmission();
         vesting.renounceOwnership();
 
-        token.transfer(alice, INITIAL_LOCK);
+        assertTrue(token.transfer(alice, INITIAL_LOCK));
         vm.startPrank(alice);
         token.approve(address(supporter), INITIAL_LOCK);
         supporter.lock(INITIAL_LOCK);
@@ -62,7 +62,7 @@ contract ZarosabeSupporterTest is Test {
         vesting.setVestingRecipient(alice);
         vesting.startEmission();
 
-        token.transfer(alice, INITIAL_LOCK);
+        assertTrue(token.transfer(alice, INITIAL_LOCK));
         vm.startPrank(alice);
         token.approve(address(supporter), INITIAL_LOCK);
         supporter.lock(INITIAL_LOCK);
