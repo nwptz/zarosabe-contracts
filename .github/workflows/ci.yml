@@ -27,7 +27,7 @@ jobs:
                   version: stable
 
             - name: Install OpenZeppelin
-              run: forge install OpenZeppelin/openzeppelin-contracts --no-commit
+              run: forge install OpenZeppelin/openzeppelin-contracts
 
             - name: Format check
               run: npm run format:check
