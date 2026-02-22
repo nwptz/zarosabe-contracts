@@ -22,6 +22,8 @@
 - Unexpected behavior from non-standard ERC20 tokens
 - Upstream configuration mismatch (wrong recipient/token linkage) blocks supporter emission start.
 - If upstream ownership is not renounced, recipient can be redirected and break downstream assumptions.
+- Position migration misuse if recipient cleanliness checks are incomplete.
+- SBT custody bypass risk if burn is possible outside migration-only context.
 
 ## Required Tests
 
@@ -29,3 +31,5 @@
 - Permission tests for owner-only methods
 - Time-based vesting and emission boundary tests
 - Reentrancy regression tests on claim/compound/unlock
+- Migration tests covering full state move, recipient constraints, and post-emission behavior.
+- Regression test proving direct SBT burn reverts outside migration path.

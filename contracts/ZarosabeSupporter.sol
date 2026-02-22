@@ -9,7 +9,7 @@ pragma solidity ^0.8.28;
 	- Self-contained emissions: 50B tokens over 5 years from emissionStart.
 	- Upstream vesting serves as a liquidity source, not a clock.
     - Single-token staking pool.
-	- Soulbound badge minted once per wallet on first lock.
+	- Soulbound badge is unique per wallet (non-transferable, migratable via burn+mint).
     - Amount based badge tier (peak-locked based).
 	- Time-based burn penalty on reward claims (higher burn early).
 	- No burn penalty for direct compound (as incentive).
@@ -99,8 +99,18 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
     error UpstreamTokenMismatch();
     /// @notice Reverts on any SBT transfer attempt after mint.
     error SbtNonTransferable();
+    /// @notice Reverts when SBT burn is attempted outside migration flow.
+    error SbtBurnOnlyViaMigration();
     /// @notice Reverts on SBT approval operations.
     error SbtNonApprovable();
+    /// @notice Reverts when trying to migrate a position to self.
+    error SelfMigrationNotAllowed();
+    /// @notice Reverts when sender has no active SBT to migrate.
+    error SenderHasNoSbt();
+    /// @notice Reverts when recipient already has active lock.
+    error RecipientHasActiveLock();
+    /// @notice Reverts when recipient has non-empty lock/reward/badge state.
+    error RecipientNotClean();
     /// @notice Reverts when supporter emission is started more than once.
     error EmissionAlreadyStarted();
     /// @notice Reverts when emission start is attempted without at least one locked user.
@@ -183,7 +193,7 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
     /// @notice Total amount of tokens currently locked.
     uint256 public totalLocked;
 
-    /// @notice Total number of unique supporters (based on minted badges).
+    /// @notice Total number of unique supporters (wallets currently holding a unique SBT).
     uint256 public supporterCount;
 
     /// @notice Mapping of user address to their locked balance.
@@ -220,6 +230,12 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
 
     /// @notice Whether a user has already received their soulbound badge.
     mapping(address => bool) public hasSBT;
+
+    /// @notice Active SBT token id by owner. Zero means no active SBT.
+    mapping(address => uint256) private _sbtTokenIdByOwner;
+
+    /// @dev Internal context flag to allow burn only while migration runs.
+    bool private _burnContext;
 
     /// @notice Root IPFS for badge metadata
     string private _badgeRootURI;
@@ -261,6 +277,27 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
     /// @param user Badge owner.
     /// @param tokenId Minted SBT tokenId.
     event BadgeMinted(address indexed user, uint256 tokenId);
+    /// @notice Emitted when a soulbound badge is burned as part of migration.
+    /// @param user Previous badge owner.
+    /// @param tokenId Burned SBT tokenId.
+    event BadgeBurned(address indexed user, uint256 tokenId);
+    /// @notice Emitted when full position/accounting and SBT are migrated to a new wallet.
+    /// @param from Old wallet.
+    /// @param to New wallet.
+    /// @param locked Amount of principal moved.
+    /// @param pending Amount of pending reward moved.
+    /// @param peak Peak locked amount history moved.
+    /// @param oldTokenId Burned token id from old wallet.
+    /// @param newTokenId Newly minted token id for new wallet.
+    event PositionMigrated(
+        address indexed from,
+        address indexed to,
+        uint256 locked,
+        uint256 pending,
+        uint256 peak,
+        uint256 oldTokenId,
+        uint256 newTokenId
+    );
     /// @notice Emitted when non-ZAROSABE token retrieveal is attempted by owner.
     /// @param token Non-ZAROSABE token.
     /// @param amount Amount transferred.
@@ -296,12 +333,13 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Blocks all transfers except minting (from == address(0)).
+     * @dev Blocks all transfers except minting and migration-scoped burn.
      * @param to Transfer target passed by ERC721 internals.
      * @param tokenId Token id being updated.
      * @param auth Authorized operator passed by ERC721 internals.
      * @return from Previous owner address returned by ERC721 internals.
-     * @dev Any non-mint transfer reverts to enforce soulbound behavior.
+     * @dev Any owner-to-owner transfer reverts to enforce soulbound behavior.
+     * @dev Burn path (`to == address(0)`) is allowed only when `_burnContext` is true.
      */
     function _update(
         address to,
@@ -309,7 +347,10 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
         address auth
     ) internal override returns (address from) {
         from = super._update(to, tokenId, auth);
-        if (from != address(0)) revert SbtNonTransferable();
+        if (from != address(0) && to != address(0)) revert SbtNonTransferable();
+        if (from != address(0) && to == address(0) && !_burnContext) {
+            revert SbtBurnOnlyViaMigration();
+        }
     }
 
     /**
@@ -330,6 +371,52 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
      */
     function setApprovalForAll(address, bool) public pure override {
         revert SbtNonApprovable();
+    }
+
+    /**
+     * @dev Mints a new active soulbound badge for `user`.
+     * @param user Badge owner.
+     * @return tokenId Minted token id.
+     * @dev Updates `hasSBT`, owner token-id index, and active supporter counter.
+     */
+    function _mintBadge(address user) internal returns (uint256 tokenId) {
+        tokenId = ++_tokenIdCounter;
+        _safeMint(user, tokenId);
+        _sbtTokenIdByOwner[user] = tokenId;
+        hasSBT[user] = true;
+        ++supporterCount;
+        emit BadgeMinted(user, tokenId);
+    }
+
+    /**
+     * @dev Burns the active badge for `user` within migration context only.
+     * @param user Current badge owner.
+     * @return tokenId Burned token id.
+     * @dev This function toggles `_burnContext` to satisfy {_update} burn guard.
+     */
+    function _burnBadgeDuringMigration(address user) internal returns (uint256 tokenId) {
+        tokenId = _sbtTokenIdByOwner[user];
+        _burnContext = true;
+        _burn(tokenId);
+        _burnContext = false;
+
+        _sbtTokenIdByOwner[user] = 0;
+        hasSBT[user] = false;
+        --supporterCount;
+        emit BadgeBurned(user, tokenId);
+    }
+
+    /**
+     * @dev Returns whether recipient has empty position and accounting state.
+     * @param user Address to validate.
+     * @return True when recipient can safely receive a migrated position.
+     */
+    function _isCleanRecipient(address user) internal view returns (bool) {
+        if (hasSBT[user]) return false;
+        if (pendingRewards[user] != 0) return false;
+        if (userRewardPerTokenPaid[user] != 0) return false;
+        if (badgeLockedAmount[user] != 0) return false;
+        return true;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -478,14 +565,9 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
         bool isFirstLock = lockedBalance[user] == 0;
         uint256 prevTier = _badgeTierForAmount(badgeLockedAmount[user]);
         if (isFirstLock) {
-            // Mint soulbound badge only once per wallet
+            // Mint soulbound badge only when wallet has no active SBT
             if (hasSBT[user]) revert SbtAlreadyMinted();
-            uint256 tokenId = ++_tokenIdCounter;
-
-            _safeMint(user, tokenId);
-            emit BadgeMinted(user, tokenId);
-            hasSBT[user] = true;
-            ++supporterCount;
+            _mintBadge(user);
         }
 
         totalLocked += amount;
@@ -628,6 +710,60 @@ contract ZarosabeSupporter is Ownable, ReentrancyGuard, ERC721 {
 
         emit Compound(user, reward);
         emit UserLock(user, reward);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            MIGRATION
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Migrates full position/accounting and SBT from caller to `newWallet`.
+     * @dev Can be executed anytime, including after emission end.
+     * @dev This operation does not claim, compound, or burn reward tokens.
+     * @dev Migration does not change global economics
+     *      (`totalLocked`, `rewardPerTokenStored`, `totalRewardsDistributed`).
+     * @dev Sender must have active SBT and recipient must have clean state.
+     * @param newWallet Destination wallet that receives the migrated state and SBT.
+     */
+    function migratePosition(address newWallet) external nonReentrant {
+        if (newWallet == address(0)) revert ZeroRecipient();
+
+        address from = msg.sender;
+        if (newWallet == from) revert SelfMigrationNotAllowed();
+        if (!hasSBT[from]) revert SenderHasNoSbt();
+        if (lockedBalance[newWallet] != 0) revert RecipientHasActiveLock();
+        if (!_isCleanRecipient(newWallet)) revert RecipientNotClean();
+
+        // Checkpoint sender before moving any accounting fields.
+        _updateReward(from);
+
+        uint256 movedLocked = lockedBalance[from];
+        uint256 movedPending = pendingRewards[from];
+        uint256 movedPeak = badgeLockedAmount[from];
+        uint256 movedPaid = userRewardPerTokenPaid[from];
+
+        lockedBalance[newWallet] = movedLocked;
+        pendingRewards[newWallet] = movedPending;
+        userRewardPerTokenPaid[newWallet] = movedPaid;
+        badgeLockedAmount[newWallet] = movedPeak;
+
+        lockedBalance[from] = 0;
+        pendingRewards[from] = 0;
+        userRewardPerTokenPaid[from] = 0;
+        badgeLockedAmount[from] = 0;
+
+        uint256 oldTokenId = _burnBadgeDuringMigration(from);
+        uint256 newTokenId = _mintBadge(newWallet);
+
+        emit PositionMigrated(
+            from,
+            newWallet,
+            movedLocked,
+            movedPending,
+            movedPeak,
+            oldTokenId,
+            newTokenId
+        );
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -85,9 +85,21 @@ npm run format:check
 - `ZarosabeSupporter`:
 - `constructor(address _zarosabe, address _upstream, string badgeRootURI)`
 - `startEmission()` (owner-only)
-- `lock(uint256 amount)`, `claim()`, `compound()`, `unlock()`
+- `lock(uint256 amount)`, `claim()`, `compound()`, `unlock()`, `migratePosition(address newWallet)`
 - `retrieveToken(address token)` (owner-only)
 - Deployment/order assumptions in this README are treated as locked for script/test work.
+
+## ZarosabeSupporter Migration Notes
+
+- `migratePosition(address newWallet)` moves full live position ownership to `newWallet`:
+- lock state (`lockedBalance`)
+- reward accounting (`pendingRewards`, `userRewardPerTokenPaid`)
+- badge history (`badgeLockedAmount`)
+- active SBT ownership (burn old SBT, mint new SBT with new tokenId)
+- Migration is allowed any time, including after emission end and after unlock (badge/history-only migration).
+- SBT cannot be transferred wallet-to-wallet.
+- SBT burn is disallowed unless called internally by migration flow.
+- `supporterCount` tracks unique supporter wallets currently holding a live SBT (one SBT per wallet at a time).
 
 ## License
 

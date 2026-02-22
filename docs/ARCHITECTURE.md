@@ -41,6 +41,15 @@
 - Rewards are checkpointed before lock-state mutation.
 - `_pullUpstream()` may claim from `LinearVesting` to top up pool liquidity.
 
+- `migratePosition(newWallet)`:
+- Caller migrates full position ownership to `newWallet` (no economic realization).
+- Moves accounting state: `lockedBalance`, `pendingRewards`, `userRewardPerTokenPaid`.
+- Moves badge history: `badgeLockedAmount`.
+- Burns old SBT and mints new SBT (new tokenId) for destination wallet.
+- Allowed anytime (including after `emissionEnd`, including post-unlock for badge/history-only migration).
+- No claim/compound/burn-token side effect is performed.
+- `supporterCount` represents unique supporter wallets currently holding a live SBT.
+
 - `claim()`:
 - User checkpoints rewards, burn schedule is applied to gross reward.
 - Contract enforces liquid reward sufficiency via `_ensureRewardBalance`.
@@ -83,6 +92,11 @@
 - `ZarosabeSupporter` principal separation:
 - `totalLocked` tracks only user principal plus compounded rewards.
 - `remainingClaimablePool()` excludes `totalLocked` from withdrawable rewards.
+- `migratePosition` does not mutate global principal totals and does not realize rewards.
+
+- SBT custody constraints:
+- Owner-to-owner SBT transfer is always blocked.
+- SBT burn is only allowed during migration internal context.
 
 - Upstream linkage constraints:
 - At supporter `startEmission`, upstream must already be started.
